@@ -1,0 +1,70 @@
+clc;
+clear;
+close all;
+
+path= 'data\';
+D = dir(fullfile(path,'*.mat'));
+
+for dd = 1: length(D)
+    load(fullfile(path,D(dd).name));
+    %rand('state', 0);
+    fp = fopen(['result\',D(dd).name,'.txt'],'wt');
+    sumObj = zeros(1,4);
+    
+    MaxIter = 10;
+    fea = normalizeData(fea);
+    
+    dim=size(fea,2);
+    if dim>200
+        [features,weights] = MI(fea,gnd,12);
+        fea1=fea(:,features(1:200));
+    else
+        fea1=fea;
+    end
+    
+    global suRED suREL NP
+    [suRED,suREL] = computeRelevanceRedundancy(fea1,gnd);
+    NP=size(fea1,1);
+    FunctionValue = zeros(MaxIter,4);
+    labellabel = ones(MaxIter,NP);
+    for iter = 1:MaxIter
+        
+        fprintf(fp, '%d:\n', iter);
+        [FunctionValue(iter,:),labellabel(iter,:)] = evaluate_SVM(fea1,gnd);
+        pred_Label = labellabel(iter,:)';
+        
+        [~,~,Rn, NMI] = exMeasure(pred_Label,gnd);
+        [micro, macro] = micro_macro_PR(pred_Label,gnd);
+        
+        lastRn(iter) = Rn;
+        lastNMI(iter) = NMI;
+        lastmicro_P(iter) = micro.precision;
+        lastmicro_R(iter) = micro.recall;
+        lastmicro_F(iter) = micro.fscore;
+        lastmacro_P(iter) = macro.precision;
+        lastmacro_R(iter) = macro.recall;
+        lastmacro_F(iter) = macro.recall;
+        
+        obj = FunctionValue(iter,:);
+        
+        sumObj = sumObj + obj;
+    end
+    
+    average = sumObj/MaxIter;
+    finalresult(dd,1) = sum(lastRn)/MaxIter;
+    finalresult(dd,2) = sum(lastNMI)/MaxIter;
+    finalresult(dd,3) = -average(3);
+    finalresult(dd,4) = sum(lastmicro_P)/MaxIter;
+    finalresult(dd,5) = sum(lastmicro_R)/MaxIter;
+    finalresult(dd,6) = sum(lastmicro_F)/MaxIter;
+    finalresult(dd,7) = sum(lastmacro_P)/MaxIter;
+    finalresult(dd,8) = sum(lastmacro_R)/MaxIter;
+    finalresult(dd,9) = sum(lastmacro_F)/MaxIter;
+    finalresult
+    
+    fprintf(fp, 'AverRn = %f AverNMI = %f AverAcc = %f Avermicro_P = %f Avermicro_R = %f Avermicro_F = %f Avermacro_P = %f Avermacro_R = %f Avermacro_F = %f\n', ...
+        finalresult(dd,1), finalresult(dd,2), finalresult(dd,3), finalresult(dd,4), finalresult(dd,5), ...
+        finalresult(dd,6), finalresult(dd,7), finalresult(dd,8), finalresult(dd,9));
+    fclose(fp);
+end
+%dlmwrite(['result.csv' ],finalresult, 'precision', 4, 'newline', 'pc');
