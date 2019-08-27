@@ -1,0 +1,391 @@
+clear all
+clc
+
+path= 'data\';
+D = dir(fullfile(path,'*.mat'));
+
+for dd = 1: length(D)
+    
+    load(fullfile(path,D(dd).name));
+    
+    fp = fopen(['result\',D(dd).name,'.txt'],'wt');
+    
+    sumObj = zeros(1,4);
+    
+    MaxIter = 30;
+    
+    for iter = 1:MaxIter
+        
+        fprintf(fp, '%d:\n', iter);
+        
+        M = 4;
+        [N,W] = generateLamdaNew(M);
+        W(W==0) = 0.000001;
+        T = 50;
+        MaxFES = 1000;
+        B = zeros(N);
+        for i = 1 : N
+            for j = i : N
+                B(i,j) = norm(W(i,:)-W(j,:));
+                B(j,i) = B(i,j);
+            end
+        end
+        [~,B] = sort(B,2);
+        B = B(:,1:T);
+        %Coding='Binary';
+        fea = normalizeData(fea);
+        dim=size(fea,2);
+        if dim>200
+            [features,weights] = MI(fea,gnd,12);
+            fea1=fea(:,features(1:200));
+        else
+            fea1=fea;
+        end
+        
+        [suRED,suREL] = computeRelevanceRedundancy(fea1,gnd);
+        
+        popsize=N;
+        dim=size(fea1,2);
+        initial_pop = -4+8*rand(popsize,dim);
+        %initial part
+        population=transfer2binaryNew(initial_pop);
+        NP=size(fea1,1);
+        %initialize the values
+        FunctionValue = zeros(N,4);
+        labellabel = ones(N,NP);
+        
+        for i=1:1:N
+            X = population(i,:);
+            featIxes = find(X==1);
+            nAttrs = size(X,2);
+            % get cardinality
+            cardinality = numel(featIxes);
+            if cardinality == 0
+                FunctionValue(i,:) = [Inf Inf Inf numel(featIxes)];
+                results=zeros(10,1);
+                indices = crossvalind('Kfold',NP,10);
+                for ii = 1:10
+                    test = (indices == ii); train = ~test;
+                    label=knn(fea1(train,featIxes), gnd(train), fea1(test,featIxes), 2);
+                    results(ii)=Misclassification_error(gnd(test), label);
+                    labellabel(i,test)=label;
+                end
+            else
+                REL = sum(suREL(featIxes));
+                if cardinality == 1
+                    RED = 0;
+                else
+                    temp = nchoosek(featIxes,2);
+                    ixes = (temp(:,2)-1)*nAttrs+temp(:,1);
+                    RED = sum(suRED(ixes));
+                end
+                results=zeros(10,1);
+                indices = crossvalind('Kfold',NP,10);
+                for ii = 1:10
+                    test = (indices == ii); train = ~test;
+                    label=knn(fea1(train,featIxes), gnd(train), fea1(test,featIxes), 2);
+                    results(ii)=Misclassification_error(gnd(test), label);
+                    labellabel(i,test)=label;
+                end
+                ACC=sum(results)/10;
+                Car=size(featIxes,2);
+                FunctionValue(i,:)=[-REL RED -ACC Car];
+            end
+        end
+        Z = min(FunctionValue);
+        
+        FES=0;
+        Para = zeros(N, 2);
+        spara = randperm(2)';
+        I_D = size(initial_pop,2);
+        I_iter = 1;
+        labelTemp = ones(1,NP);
+        rate = zeros(200,1);
+        
+        while FES < MaxFES
+            FES
+            
+            
+            for i = 1 : N
+                Fmax = max(FunctionValue);
+                Fmin = Z;
+                %ACC
+                for index = 1:M
+                    if Fmin(index) == Fmax(index)
+                        Fmax(index) = Fmin(index) + 1;
+                    end
+                end
+                
+                FunctionValue = (FunctionValue-repmat(Fmin,N,1))./repmat(Fmax-Fmin,N,1);
+                
+                
+                k = randperm(T);
+                k = B(i,k(1:2));
+                
+                Offspring = get_a_cuckoo(initial_pop(i,:),[initial_pop(k(1),:);initial_pop(k(2),:)]);
+                
+                OffspringTemp = transfer2binaryNew(Offspring);
+                X=OffspringTemp;
+                featIxes = find(OffspringTemp==1);
+                
+                
+                % get cardinality
+                cardinality = numel(featIxes);
+                % relevance
+                nAttrs = size(X,2);
+                
+                
+                if cardinality == 0
+                    OffFunValue = [Inf Inf Inf numel(featIxes)];
+                    indices = crossvalind('Kfold',NP,10);
+                    for ii = 1:10
+                        test = (indices == ii); train = ~test;
+                        label=knn(fea1(train,featIxes), gnd(train), fea1(test,featIxes), 2);
+                        labelTemp(test)=label;
+                    end
+                else
+                    REL = sum(suREL(featIxes));
+                    if cardinality == 1
+                        % 1 input selected, no redundancy
+                        RED = 0;
+                    else
+                        temp = nchoosek(featIxes,2);
+                        ixes = (temp(:,2)-1)*nAttrs+temp(:,1);
+                        RED = sum(suRED(ixes));
+                    end
+                    results=zeros(10,1);
+                    indices = crossvalind('Kfold',NP,10);
+                    for ii = 1:10
+                        test = (indices == ii); train = ~test;
+                        label=knn(fea1(train,featIxes), gnd(train), fea1(test,featIxes), 2);
+                        results(ii)=Misclassification_error(gnd(test), label);
+                        labelTemp(test)=label;
+                        
+                    end
+                    ACC=sum(results)/10;
+                    Car=size(featIxes,2);
+                    OffFunValue=[-REL RED -ACC Car];
+                end
+                OffFunValue = (OffFunValue-Fmin)./(Fmax-Fmin);
+                
+                Z = min(Z,OffFunValue);
+                
+                for j = 1 : T
+                    if A == 1
+                        g_old = max(abs(FunctionValue(B(i,j),:)-Z).*W(B(i,j),:));
+                        g_new = max(abs(OffFunValue-Z).*W(B(i,j),:));
+                    elseif A == 2
+                        d1 = abs(sum((FunctionValue(B(i,j),:)-Z).*W(B(i,j),:)))/norm(W(B(i,j),:));
+                        g_old = d1+5*norm(FunctionValue(B(i,j),:)-(Z+d1*W(B(i,j),:)/norm(W(B(i,j),:))));
+                        d1 = abs(sum((OffFunValue-Z).*W(B(i,j),:)))/norm(W(B(i,j),:));
+                        g_new = d1+5*norm(OffFunValue-(Z+d1*W(B(i,j),:)/norm(W(B(i,j),:))));
+                    end
+                    if g_new < g_old
+                        
+                        initial_pop(B(i,j),:) = Offspring;
+                        FunctionValue(B(i,j),:) = OffFunValue;
+                        labellabel(B(i,j),:) = labelTemp;
+                    end
+                end
+                
+                FunctionValue = FunctionValue.*repmat(Fmax-Fmin,N,1)+repmat(Fmin,N,1);
+                FES = FES+1;
+            end
+            
+            pa = [0.4;0.5;0.6;0.7];
+            inde = 1 : N;
+            inde = inde';
+            
+            count = 0;
+            
+            if(I_iter == 1)
+                Para(inde, :) = [spara(randint(N, 1, [1, size(spara, 1)])), pa(randint(N, 1, [1, size(pa, 1)]))];
+                
+            else
+                for k = 1 : N
+                    if(rand <= RATE && ~isempty(PPara))
+                        
+                        Para(inde(k), :) = PPara(randint(1, 1, [1, size(PPara, 1)]), :);
+                        
+                    else
+                        
+                        Para(inde(k), :) = [spara(randint(1, 1, [1, size(spara, 1)])), pa(randint(1, 1, [1, size(pa, 1)]))];
+                        
+                    end
+                end
+            end
+            
+            PPara = [];
+            para = zeros(N,I_D);
+            
+            for i = 1 : N
+                
+                Fmax = max(FunctionValue);
+                Fmin = Z;
+                %ACC
+                for index = 1:M
+                    if Fmin(index) == Fmax(index)
+                        Fmax(index) = Fmin(index) + 1;
+                    end
+                end
+                
+                FunctionValue = (FunctionValue-repmat(Fmin,N,1))./repmat(Fmax-Fmin,N,1);
+                
+                para(i, :) = normrnd(0.1, 0.01, 1, I_D);
+                FM_mui = rand(1, I_D) < Para(i, 2);
+                
+                FM_mpo = FM_mui < 0.5;
+                if(Para(i, 1) == 1)
+                    ind = randperm(N);
+                    FM_pm3 = initial_pop(ind(1), :);
+                    FM_pm4 = initial_pop(ind(2), :);
+                    r = rand;
+                    s1 = (1-r).*FM_pm3+r.*FM_pm4;
+                    s = initial_pop(i, :).*FM_mpo + s1 .* FM_mui;
+                end
+                if(Para(i, 1) == 2)
+                    % DE/current-to-rand/1/bin/
+                    ind = randperm(N);
+                    FM_pm21 = initial_pop(ind(1), :);
+                    FM_pm22 = initial_pop(ind(2), :);
+                    FM_pm23 = initial_pop(ind(3), :);
+                    s = initial_pop(i, :).*FM_mpo + FM_mui .* (rand(1, I_D) .* (FM_pm21-initial_pop(i, :)) + para(i, :) .* (FM_pm22 - FM_pm23));  % differential variation
+                end
+                
+                
+                MaxValue = 4*ones(size(s));
+                
+                MinValue = -4*ones(size(s));
+                
+                
+                index1=find(s>MaxValue == 1);
+                s(index1) = max(2*MaxValue(index1) - s(index1),MinValue(index1));
+                
+                index2=find(s<MinValue == 1);
+                
+                s(index2) = min(2*MinValue(index2) - s(index2),MaxValue(index2));
+                
+                Offspring = s;
+                
+                OffspringTemp = transfer2binaryNew(Offspring);
+                X=OffspringTemp;
+                featIxes = find(OffspringTemp==1);
+                
+                
+                % get cardinality
+                cardinality = numel(featIxes);
+                % relevance
+                
+                nAttrs = size(X,2);
+                
+                if cardinality == 0
+                    OffFunValue = [Inf Inf Inf numel(featIxes)];
+                    
+                    indices = crossvalind('Kfold',NP,10);
+                    for ii = 1:10
+                        test = (indices == ii); train = ~test;
+                        label=knn(fea1(train,featIxes), gnd(train), fea1(test,featIxes), 2);
+                        results(ii)=Misclassification_error(gnd(test), label);
+                        labelTemp(test)=label;
+                    end
+                else
+                    REL = sum(suREL(featIxes));
+                    if cardinality == 1
+                        % 1 input selected, no redundancy
+                        RED = 0;
+                    else
+                        temp = nchoosek(featIxes,2);
+                        ixes = (temp(:,2)-1)*nAttrs+temp(:,1);
+                        RED = sum(suRED(ixes));
+                    end
+                    results=zeros(10,1);
+                    indices = crossvalind('Kfold',NP,10);
+                    for ii = 1:10
+                        test = (indices == ii); train = ~test;
+                        label=knn(fea1(train,featIxes), gnd(train), fea1(test,featIxes), 2);
+                        results(ii)=Misclassification_error(gnd(test), label);
+                        labelTemp(test) = label;
+                    end
+                    ACC=sum(results)/10;
+                    Car=size(featIxes,2);
+                    OffFunValue=[-REL RED -ACC Car];
+                end
+                OffFunValue = (OffFunValue-Fmin)./(Fmax-Fmin);
+                
+                Z = min(Z,OffFunValue);
+                
+                g_old = max(abs(FunctionValue(i,:)-Z).*W(i,:));
+                g_new = max(abs(OffFunValue-Z).*W(i,:));
+                if g_new < g_old
+                    initial_pop(i,:) = Offspring;
+                    FunctionValue(i,:) = OffFunValue;
+                    labellabel(i,:) = labelTemp;
+                    PPara = [Para(i, :); PPara];
+                else
+                    count = count + 1;
+                end
+                
+                FunctionValue = FunctionValue.*repmat(Fmax-Fmin,N,1)+repmat(Fmin,N,1);
+                FES = FES+1;
+                if FES > MaxFES
+                    break;
+                end
+            end
+            %FunctionValue
+            rate(I_iter, 1) = count / N;
+            
+            RATE = mean(rate, 1);
+            
+            I_iter = I_iter + 1;
+            
+        end
+        
+        [FrontValue,MaxFront] = P_sort(FunctionValue);
+        
+        FunctionValuePareto = FunctionValue(FrontValue==1,:);
+        labellabelPareto = labellabel(FrontValue==1,:);
+        
+        [result, index] = sort(FunctionValuePareto(:,3));
+        
+        pred_Label = labellabelPareto(index(1),:)';
+        
+        [~,~,Rn, NMI] = exMeasure(pred_Label,gnd);
+        
+        lastRn(iter) = Rn;
+        lastNMI(iter) = NMI;
+        
+        [micro, macro] = micro_macro_PR(pred_Label,gnd);
+        
+        lastRn(iter) = Rn;
+        lastNMI(iter) = NMI;
+        lastmicro_P(iter) = micro.precision;
+        lastmicro_R(iter) = micro.recall;
+        lastmicro_F(iter) = micro.fscore;
+        lastmacro_P(iter) = macro.precision;
+        lastmacro_R(iter) = macro.recall;
+        lastmacro_F(iter) = macro.recall;
+        
+        obj = FunctionValuePareto(index(1),:);
+        
+        sumObj = sumObj + obj;
+        
+    end
+    
+    average = sumObj/MaxIter;
+    finalresult(dd,1) = sum(lastRn)/MaxIter;
+    finalresult(dd,2) = sum(lastNMI)/MaxIter;
+    finalresult(dd,3) = -average(3);
+    finalresult(dd,4) = sum(lastmicro_P)/MaxIter;
+    finalresult(dd,5) = sum(lastmicro_R)/MaxIter;
+    finalresult(dd,6) = sum(lastmicro_F)/MaxIter;
+    finalresult(dd,7) = sum(lastmacro_P)/MaxIter;
+    finalresult(dd,8) = sum(lastmacro_R)/MaxIter;
+    finalresult(dd,9) = sum(lastmacro_F)/MaxIter;
+    finalresult
+    
+    fprintf(fp, 'AverRn = %f AverNMI = %f AverAcc = %f Avermicro_P = %f Avermicro_R = %f Avermicro_F = %f Avermacro_P = %f Avermacro_R = %f Avermacro_F = %f\n', ...
+        finalresult(dd,1), finalresult(dd,2), finalresult(dd,3), finalresult(dd,4), finalresult(dd,5), ...
+        finalresult(dd,6), finalresult(dd,7), finalresult(dd,8), finalresult(dd,9));
+    fclose(fp);
+end
+%dlmwrite(['result.csv' ],finalresult, 'precision', 4, 'newline', 'pc');
