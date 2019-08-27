@@ -1,0 +1,307 @@
+clc;
+clear;
+close all;
+% matlabpool open
+
+path= 'data\';
+D = dir(fullfile(path,'*.mat'));
+
+for dd = 1: length(D)
+    data = load(fullfile(path,D(dd).name));
+    
+    fp = fopen(['result\',D(dd).name,'.txt'],'wt');
+    
+    sumObj = zeros(1,4);
+    
+    empty_particle.Position = [];
+    empty_particle.Velocity = [];
+    empty_particle.Cost = [];
+    empty_particle.Label = [];
+    empty_particle.feaIxes = [];
+    empty_particle.Best.Position = [];
+    empty_particle.Best.Cost = [];
+    empty_particle.Best.Label= [];
+    empty_particle.Best.feaIxes = [];
+    empty_particle.IsDominated = [];
+    empty_particle.Distance = [];
+    
+    fea = normalizeData(data.fea);
+    gnd = data.gnd;
+    itnum = 30;
+    
+    for iter = 1:itnum
+        iter
+        fprintf(fp, '%d:\n', iter);
+        
+        %         global suRED suREL NP
+        
+        dim=size(fea,2);
+        
+        if dim > 200
+            [features,weights] = MI(fea,gnd,5);
+            fea1=fea(:,features(1:200));
+        else
+            fea1=fea;
+        end
+        
+        [suRED,suREL] = computeRelevanceRedundancy(fea1,gnd);
+        
+        NP = size(fea1,1);
+        
+        randSet = randperm(NP);
+        numberTrain = round(0.7*NP);
+        numberTest = NP - numberTrain;
+        %%%row
+        trainSet = randSet(1:numberTrain);
+        
+        testSet = randSet(1:numberTest);
+        testLabel = gnd(testSet);
+        
+        typeGnd = numel(unique(gnd));
+        numberGnd = zeros(1,typeGnd);
+        if numel(unique(testLabel)) == 1
+            for i = 1 : numel(gnd)
+                for j = 1 : typeGnd
+                    if gnd(i) == j
+                        numberGnd(j) = numberGnd(j) + 1;
+                    end
+                end
+            end
+            %             numberGnd
+            flagChosen = zeros(1,numel(gnd));
+            for j = 1 : typeGnd
+                temp = ceil(0.3*numberGnd(j));
+                if temp >= 1
+                    flag = find(gnd == j);
+                    flagArr = randperm(numel(flag));
+                    flagArrNew = flag(flagArr);
+                    flagChosen(flagArrNew(1:temp)) = 1;
+                end
+            end
+            testSet = find(flagChosen == 1);
+        end
+        
+        nVar = size(fea1,2);
+        
+        %% MOPSO Parameters
+        
+        MaxIt = 1000;		% Maximum Number of Iterations
+        nPop = 400;			% Population Size
+        nRep = 20;			% Repository Size
+        
+        w = 0.3;			% Inertia Weight
+        wdamp = 0.99;		% Inertia Weight Damping Rate
+        c1 = 0.5;		    % Personal Learning Coefficient
+        c2 = 1;				% Global Learning Coefficient
+        
+        mu = 0.1;			% Mutation Rate
+        
+        VarMin = -4*ones(1, nVar);
+        VarMax = 4*ones(1, nVar);
+        VarSize = [1 nVar];
+        
+        pop = repmat(empty_particle, nPop, 1);
+        
+        for i = 1:nPop
+            
+            pop(i).Position = unifrnd(VarMin, VarMax, VarSize);
+            
+            pop(i).Velocity = zeros(VarSize);
+            
+            [feaIxes,Ccost,label] = evaluate(pop(i).Position,fea1,gnd,suRED,suREL,numberTrain);
+            pop(i).Cost = Ccost;
+            pop(i).Label = label;
+            pop(i).feaIxes = feaIxes;
+            
+            % Update Best
+            pop(i).Best.Position = pop(i).Position;
+            pop(i).Best.Cost = pop(i).Cost;
+            pop(i).Best.Label = pop(i).Label;
+            pop(i).Best.feaIxes = pop(i).feaIxes;
+            
+        end
+        
+        % Determine Domination
+        pop = DetermineDomination(pop);
+        
+        rep = pop(~[pop.IsDominated]);
+        
+        FES = 0;
+        NewSol = repmat(empty_particle,1, 1);
+        newSolution  = repmat(empty_particle,1, 1);
+        
+        
+        while FES < MaxIt
+            %             FES
+            
+            rep = CrowdingDistance(rep);
+            
+            for i = 1:nPop
+                
+                distance = [rep.Distance];
+                
+                [sorted, indexRep] = sort(distance(1, :),'descend');
+                
+                leader = rep(indexRep(1));
+                
+                pop(i).Velocity = w*pop(i).Velocity + c1*rand(VarSize).*(pop(i).Best.Position - pop(i).Position) + c2*rand(VarSize).*(leader.Position - pop(i).Position);
+                
+                pop(i).Position = pop(i).Position + pop(i).Velocity;
+                
+                % Maintain the particle in the search space in case they go beyond their boundaries.
+                index1=find(pop(i).Position>VarMax == 1);
+                pop(i).Position(index1) = max(2*VarMax(index1) - pop(i).Position(index1),VarMin(index1));
+                %opposite search
+                pop(i).Velocity(index1) = -0.1 * pop(i).Velocity(index1);
+                
+                index2=find(pop(i).Position<VarMin == 1);
+                pop(i).Position(index2) = min(2*VarMin(index2) - pop(i).Position(index2),VarMax(index2));
+                pop(i).Velocity(index2) = -0.1 * pop(i).Velocity(index2);
+                
+                [feaIxes,Ccost,label] = evaluate(pop(i).Position,fea1,gnd,suRED,suREL,numberTrain);
+                pop(i).Cost = Ccost;
+                pop(i).Label = label;
+                pop(i).feaIxes = feaIxes;
+                FES = FES + 1;
+                
+                % Apply Mutation
+                % How to select the 'pm' parameter is important!
+                pm = (1-(FES-1)/(MaxIt-1))^(1/mu);
+                
+                if rand < pm
+                    
+                    NewSol.Position = MutateNew(pop, i, pm, VarMin, VarMax);
+                    [feaIxes,Ccost,label] = evaluate(NewSol.Position, fea1, gnd, suRED, suREL, numberTrain);
+                    NewSol.feaIxes = feaIxes;
+                    NewSol.Cost = Ccost;
+                    NewSol.Label = label;
+                    FES = FES + 1;
+                    
+                    pop(i).Position = NewSol.Position;
+                    pop(i).Cost = NewSol.Cost;
+                    pop(i).feaIxes = NewSol.feaIxes;
+                    pop(i).Label = NewSol.Label;
+                    
+                end
+                
+                %%selection%%
+                if Dominates(pop(i), pop(i).Best)
+                    pop(i).Best.Position = pop(i).Position;
+                    pop(i).Best.Cost = pop(i).Cost;
+                    pop(i).Best.Label = pop(i).Label;
+                    pop(i).Best.feaIxes = pop(i).feaIxes;
+                end
+                
+            end
+            
+            % Determine Domination
+            pop = DetermineDomination(pop);
+            
+            % Add Non-Dominated Particles to REPOSITORY
+            rep = [rep; pop(~[pop.IsDominated])];
+            
+            number = 0;
+            %%local learning strategy
+            for i = 1 : numel(rep)
+                ind = randperm(numel(rep));
+                
+                F = 0.1 + (0.9-0.1).* rand([1,nVar]);
+                %                 F = 0.5;
+                %                 newSolution.Position = rep(i).Best.Position + F .* (rep(ind(1)).Position - rep(ind(2)).Position + rep(ind(3)).Position - rep(ind(4)).Position);
+                newSolution.Position = rep(i).Best.Position + F .* (rep(ind(1)).Position - rep(ind(2)).Position);
+                
+                % keep the newSolution in the range of [Varmin, Varmax];
+                index1=find(newSolution.Position>VarMax == 1);
+                newSolution.Position(index1) = max(2*VarMax(index1) - newSolution.Position(index1),VarMin(index1));
+                index2=find(newSolution.Position<VarMin == 1);
+                newSolution.Position(index2) = min(2*VarMin(index2) - newSolution.Position(index2),VarMax(index2));
+                
+                [feaIxes,Ccost,label] = evaluate(newSolution.Position,fea1,gnd,suRED,suREL,numberTrain);
+                newSolution.Cost = Ccost;
+                newSolution.Label = label;
+                newSolution.feaIxes = feaIxes;
+                if Dominates(newSolution, rep(i))
+                    rep(i).Position = newSolution.Position;
+                    rep(i).Cost = newSolution.Cost;
+                    rep(i).Label = newSolution.Label;
+                    rep(i).feaIxes = newSolution.feaIxes;
+                    number  = number + 1;
+                end
+                
+            end
+            
+            % Determine Domination of New Repository Members
+            rep = DetermineDomination(rep);
+            
+            % Keep only Non-Dominated Members in the Repository
+            rep = rep(~[rep.IsDominated]);
+            
+            % Calculate the Crowding Distance
+            rep = CrowdingDistance(rep);
+            
+            % Check if Repository is Full
+            if numel(rep) > nRep
+                Extra = numel(rep) - nRep;
+                rep = DeleteOneRepMember(rep, Extra);
+            end
+            
+            % Damping Inertia Weight
+            w = w*wdamp;
+        end
+        
+        
+        temp = 0;
+        for i = 1:numel(rep)
+            lastCost(i,:) = rep(i).Cost';
+        end
+        
+        [result, index] = sort(lastCost(:,3));
+        
+        lastFeaIxes = rep(index(1)).feaIxes;
+        
+        trainFeature = fea1(trainSet,lastFeaIxes);
+        trainLabel = gnd(trainSet);
+        
+        testFeature = fea1(testSet,lastFeaIxes);
+        testLabel = gnd(testSet);
+        
+        pred_Label = knn(trainFeature,trainLabel,testFeature,2);
+        
+        [~,~,Rn, NMI] = exMeasure(pred_Label,testLabel);
+        [micro, macro] = micro_macro_PR(pred_Label,testLabel);
+        accuracy = Misclassification_error(testLabel, pred_Label);
+        
+        lastRn(iter) = Rn;
+        lastNMI(iter) = NMI;
+        lastmicro_P(iter) = micro.precision;
+        lastmicro_R(iter) = micro.recall;
+        lastmicro_F(iter) = micro.fscore;
+        lastmacro_P(iter) = macro.precision;
+        lastmacro_R(iter) = macro.recall;
+        lastmacro_F(iter) = macro.recall;
+        lastACC(iter) = accuracy;
+        
+        fprintf(fp, 'Rn = %f NMI = %f  micro_P = %f micro_R = %f micro_F = %f macro_P = %f macro_R = %f macro_F = %f\n', ...
+            lastRn(iter),  lastNMI(iter), lastmicro_P(iter), lastmicro_R(iter), ...
+            lastmicro_F(iter), lastmacro_P(iter), lastmacro_R(iter), lastmacro_F(iter));
+        
+    end
+    
+    finalresult(dd,1) = sum(lastRn)/itnum;
+    finalresult(dd,2) = sum(lastNMI)/itnum;
+    finalresult(dd,3) = sum(lastACC)/itnum;
+    finalresult(dd,4) = sum(lastmicro_P)/itnum;
+    finalresult(dd,5) = sum(lastmicro_R)/itnum;
+    finalresult(dd,6) = sum(lastmicro_F)/itnum;
+    finalresult(dd,7) = sum(lastmacro_P)/itnum;
+    finalresult(dd,8) = sum(lastmacro_R)/itnum;
+    finalresult(dd,9) = sum(lastmacro_F)/itnum;
+    
+    fprintf(fp, 'AverRn = %f AverNMI = %f AverAcc = %f Avermicro_P = %f Avermicro_R = %f Avermicro_F = %f Avermacro_P = %f Avermacro_R = %f Avermacro_F = %f\n', ...
+        finalresult(dd,1), finalresult(dd,2), finalresult(dd,3), finalresult(dd,4), finalresult(dd,5), ...
+        finalresult(dd,6), finalresult(dd,7), finalresult(dd,8), finalresult(dd,9));
+    fclose(fp);
+    
+end
+% matlabpool close
+% dlmwrite(['result.csv' ],finalresult, 'precision', 4, 'newline', 'pc');
