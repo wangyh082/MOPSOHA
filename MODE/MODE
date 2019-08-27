@@ -1,0 +1,156 @@
+clc;
+clear;
+clear all
+
+path= 'data\';
+D = dir(fullfile(path,'*.mat'));
+
+for dd = 1: length(D)
+   load(fullfile(path,D(dd).name));  
+
+    fp = fopen(['result\',D(dd).name,'.txt'],'wt');
+
+    sumObj = zeros(1,4);
+    MaxIter = 30;
+    
+    for iter = 1:MaxIter
+        fprintf(fp, '%d:\n', iter);
+
+        %% Initialize all parameter of the algotithm
+        popSize = 200; 
+        nRep = 20;			  % Repository Size
+        objectiveNum = 4;
+    
+        MaxFES = 1000;
+        FES = 0;
+
+        %% A. Initialization of the Parameter Vector
+        global suRED suREL NP
+        
+        fea = normalizeData(fea);
+        dim=size(fea,2);
+        if dim>200
+            [features,weights] = MI(fea,gnd,12);
+            fea1=fea(:,features(1:200));
+        else
+            fea1=fea;
+        end      
+        
+        [suRED,suREL] = computeRelevanceRedundancy(fea1,gnd);
+        NP=size(fea1,1);
+        
+        nVar = size(fea1,2);
+        
+        parent = zeros(popSize, nVar);  % Parent Population
+        mutant = zeros(popSize, nVar);  % Mutant Population
+        child  = zeros(popSize, nVar);  % Child Population
+
+        varMin = -4*ones(popSize, nVar);
+        varMax = 4*ones(popSize, nVar);
+        cost = zeros(popSize, objectiveNum);
+        
+        F =  0.5;            % Scaling Factor
+        Cr = 0.3;           % Crossover Rate
+
+       lastLableparent = ones(popSize, NP);
+       lastLablechild  = ones(popSize, NP);
+        for i = 1:popSize
+            for j = 1:nVar
+                parent(i, j) = varMin(j) + rand*(varMax(j) - varMin(j));
+            end
+            [cost(i, :), label] = evaluate(parent(i, :),fea1,gnd);
+            lastLableparent(i,:) = label;
+        end
+
+       %% Evolution Process
+        while FES < MaxFES
+            FES
+
+            for i = 1:popSize
+
+                rev = randperm(popSize);
+                while any(rev(1: 3)==i)
+                    rev = randperm(popSize);
+                end
+
+                % Mutant vector calculation
+                mutant(i, :) = parent(rev(1,1), :)...
+                + F*(parent(rev(1, 2), :) - parent(rev(1,3), :));
+
+                for j = 1:nVar
+                    if mutant(i, j) < varMin(j)
+                        mutant(i, j) = varMin(j);
+                    elseif mutant(i, j) > varMax(j)
+                        mutant(i, j) = varMax(j);
+                    end
+                end
+
+                % C. Crossover
+                % Binomial Crossover
+                jrand = randi(nVar);
+                for j = 1:nVar
+                    if (rand<=Cr) || (j==jrand)
+                        child(i, j) = mutant(i, j);
+                    else
+                        child(i, j) = parent(i, j);
+                    end
+                end
+
+                % Evaluate the child population
+                [childCost(i, :),label] = evaluate(child(i, :),fea1,gnd);
+                lastLablechild(i,:) = label;
+                FES = FES+1; 
+            end
+
+            % C. Selection
+            for i = 1:popSize
+                if ~(childCost(i, :) > cost(i, :))
+                    parent(i, :) = child(i, :);
+                    cost(i, :) = childCost(i, :);
+                    lastLableparent(i,:) = lastLablechild(i,:);
+                end
+            end
+        end
+       [FrontValue,MaxFront] = P_sort(cost);
+        
+       FunctionValuePareto = cost(FrontValue==1,:);
+       lastLableparentPareto = lastLableparent(FrontValue==1,:); 
+       [result, index] = sort(FunctionValuePareto(:,3));
+       
+       obj = FunctionValuePareto(index(1),:); 
+       sumObj = sumObj + obj;
+       
+       lastLabel = lastLableparentPareto(index(1),:)';
+       [~,~,Rn, NMI] = exMeasure(lastLabel,gnd);
+       [micro, macro] = micro_macro_PR(lastLabel,gnd);
+        
+        lastRn(iter) = Rn;
+        lastNMI(iter) = NMI;
+        lastmicro_P(iter) = micro.precision;
+        lastmicro_R(iter) = micro.recall;
+        lastmicro_F(iter) = micro.fscore;
+        lastmacro_P(iter) = macro.precision;
+        lastmacro_R(iter) = macro.recall;
+        lastmacro_F(iter) = macro.recall;    
+       
+    end
+ 
+    average = sumObj/MaxIter;
+    finalresult(dd,1) = sum(lastRn)/MaxIter;
+    finalresult(dd,2) = sum(lastNMI)/MaxIter;
+    finalresult(dd,3) = -average(3);
+    finalresult(dd,4) = sum(lastmicro_P)/MaxIter;
+    finalresult(dd,5) = sum(lastmicro_R)/MaxIter;
+    finalresult(dd,6) = sum(lastmicro_F)/MaxIter;
+    finalresult(dd,7) = sum(lastmacro_P)/MaxIter;
+    finalresult(dd,8) = sum(lastmacro_R)/MaxIter;
+    finalresult(dd,9) = sum(lastmacro_F)/MaxIter;
+    finalresult
+    
+    fprintf(fp, 'AverRn = %f AverNMI = %f AverAcc = %f Avermicro_P = %f Avermicro_R = %f Avermicro_F = %f Avermacro_P = %f Avermacro_R = %f Avermacro_F = %f\n', ...
+        finalresult(dd,1), finalresult(dd,2), finalresult(dd,3), finalresult(dd,4), finalresult(dd,5), ...
+        finalresult(dd,6), finalresult(dd,7), finalresult(dd,8), finalresult(dd,9));
+    fclose(fp);
+    
+end
+%dlmwrite(['result.csv' ],finalresult, 'precision', 4, 'newline', 'pc');
