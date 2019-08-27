@@ -1,0 +1,216 @@
+clc;
+clear;
+close all;
+
+path= 'data\';
+D = dir(fullfile(path,'*.mat'));
+
+for dd = 1: length(D)
+    load(fullfile(path,D(dd).name));
+    
+    fp = fopen(['result\',D(dd).name,'.txt'],'wt');
+    
+    sumObj = zeros(1,4);
+    MaxIter = 30;
+    
+    for iter = 1:MaxIter
+        fprintf(fp, '%d:\n', iter);
+        
+        global suRED suREL NP
+        
+        fea = normalizeData(fea);
+        dim=size(fea,2);
+        
+        if dim>200
+            [features,weights] = MI(fea,gnd,12);
+            fea1=fea(:,features(1:200));
+        else
+            fea1=fea;
+        end
+        
+        [suRED,suREL] = computeRelevanceRedundancy(fea1,gnd);
+        NP=size(fea1,1);
+        
+        nVar = size(fea1,2);
+        
+        %% MOPSO Parameters
+        
+        MaxIt = 1000;		% Maximum Number of Iterations
+        
+        nPop = 500;			% Population Size
+        
+        nRep = 20;			% Repository Size
+        
+        w = 0.1 + (0.5-0.1).*rand([1 1]);	% Inertia Weight
+        
+        c1 = 1.5 + (2-1.5).*rand([1 1]);				% Personal Learning Coefficient
+        c2 = 1.5 + (2-1.5).*rand([1 1]);				% Global Learning Coefficient
+        
+        mu = 1/nVar;			% Mutation Rate
+        
+        VarMin = -ones(1, nVar);
+        VarMax = ones(1, nVar);
+        VarSize = [1 nVar];
+        %% Initialization
+        
+        empty_particle.Position = [];
+        empty_particle.Velocity = [];
+        empty_particle.Cost = [];
+        empty_particle.Label = [];
+        empty_particle.Best.Position = [];
+        empty_particle.Best.Cost = [];
+        empty_particle.Best.Label= [];
+        empty_particle.IsDominated = [];
+        
+        pop = repmat(empty_particle, nPop, 1);
+        
+        for i = 1:nPop
+            
+            pop(i).Position = unifrnd(VarMin, VarMax, VarSize);
+            
+            pop(i).Velocity = zeros(VarSize);
+            
+            [Ccost,label] = evaluate(pop(i).Position,fea1,gnd);
+            pop(i).Cost = Ccost;
+            pop(i).Label = label;
+            
+            
+            % Update Personal Best
+            pop(i).Best.Position = pop(i).Position;
+            pop(i).Best.Cost = pop(i).Cost;
+            pop(i).Best.Label = pop(i).Label;
+            
+        end
+        
+        % Determine Domination
+        pop = DetermineDomination(pop);
+        
+        rep = pop(~[pop.IsDominated]);
+        
+        FES = 0;
+        
+        %% MOPSO Main Loop
+        
+        while FES < MaxIt
+            FES
+            
+            for i = 1:nPop
+                
+                number = randperm(numel(rep));
+                leader = rep(number(1));
+                
+                pop(i).Velocity = w*pop(i).Velocity + c1*rand(VarSize).*(pop(i).Best.Position - pop(i).Position) + c2*rand(VarSize).*(leader.Position - pop(i).Position);
+                
+                pop(i).Position = pop(i).Position + pop(i).Velocity;
+                
+                % Maintain the particle whin the search space in case they go beyond their boundaries.
+                pop(i).Position = max(pop(i).Position, VarMin);
+                pop(i).Position = min(pop(i).Position, VarMax);
+                
+                [Ccost,label] = evaluate(pop(i).Position,fea1,gnd);
+                pop(i).Cost = Ccost;
+                pop(i).Label = label;
+                FES = FES + 1;
+                
+                % Apply Mutation
+                pm = (1 - FES/MaxIt)^(5/mu);
+                if rand < pm
+                    NewSol.Position = Mutate(pop(i).Position, pm, VarMin, VarMax);
+                    [Ccost,label] = evaluate(NewSol.Position,fea1,gnd);
+                    NewSol.Cost = Ccost;
+                    NewSol.Label = label;
+                    FES = FES + 1;
+                    if Dominates(NewSol, pop(i))
+                        pop(i).Position = NewSol.Position;
+                        pop(i).Cost = NewSol.Cost;
+                        pop(i).Label = NewSol.Label;
+                    elseif Dominates(pop(i), NewSol)
+                        % Do Nothing
+                    else
+                        if rand < 0.5
+                            pop(i).Position = NewSol.Position;
+                            pop(i).Cost = NewSol.Cost;
+                            pop(i).Label = NewSol.Label;
+                        end
+                    end
+                end
+                
+                if Dominates(pop(i), pop(i).Best)
+                    pop(i).Best.Position = pop(i).Position;
+                    pop(i).Best.Cost = pop(i).Cost;
+                    pop(i).Best.Label = pop(i).Label;
+                elseif Dominates(pop(i).Best, pop(i))
+                    % Do Nothing
+                else
+                    if rand < 0.5
+                        pop(i).Best.Position = pop(i).Position;
+                        pop(i).Best.Cost = pop(i).Cost;
+                        pop(i).Best.Label = pop(i).Label;
+                    end
+                end
+                
+            end
+            
+            % Determine Domination
+            pop = DetermineDomination(pop);
+            
+            % Add Non-Dominated Particles to REPOSITORY
+            rep = [rep; pop(~[pop.IsDominated])];
+            
+            % Determine Domination of New Repository Members
+            rep = DetermineDomination(rep);
+            
+            % Keep only Non-Dominated Members in the Repository
+            rep = rep(~[rep.IsDominated]);
+            
+            % Check if Repository is Full
+            if numel(rep) > nRep
+                Extra = numel(rep) - nRep;
+                ToBeDeleted=randsample(numel(rep),Extra);
+                rep(ToBeDeleted)=[];
+            end
+            
+        end
+        
+        for i = 1:numel(rep)
+            lastCost(i,:) = rep(i).Cost';
+        end
+        lastCost
+        [result, index] = sort(lastCost(:,3));
+        obj = lastCost(index(1),:);
+        sumObj = sumObj + obj;
+        
+        lastLabel = rep(index(1)).Label';
+        [~,~,Rn, NMI] = exMeasure(lastLabel,gnd);
+        [micro, macro] = micro_macro_PR(lastLabel,gnd);
+        
+        lastRn(iter) = Rn;
+        lastNMI(iter) = NMI;
+        lastmicro_P(iter) = micro.precision;
+        lastmicro_R(iter) = micro.recall;
+        lastmicro_F(iter) = micro.fscore;
+        lastmacro_P(iter) = macro.precision;
+        lastmacro_R(iter) = macro.recall;
+        lastmacro_F(iter) = macro.recall;
+        
+    end
+    
+    average = sumObj/MaxIter;
+    finalresult(dd,1) = sum(lastRn)/MaxIter;
+    finalresult(dd,2) = sum(lastNMI)/MaxIter;
+    finalresult(dd,3) = -average(3);
+    finalresult(dd,4) = sum(lastmicro_P)/MaxIter;
+    finalresult(dd,5) = sum(lastmicro_R)/MaxIter;
+    finalresult(dd,6) = sum(lastmicro_F)/MaxIter;
+    finalresult(dd,7) = sum(lastmacro_P)/MaxIter;
+    finalresult(dd,8) = sum(lastmacro_R)/MaxIter;
+    finalresult(dd,9) = sum(lastmacro_F)/MaxIter;
+    finalresult
+    
+    fprintf(fp, 'AverRn = %f AverNMI = %f AverAcc = %f Avermicro_P = %f Avermicro_R = %f Avermicro_F = %f Avermacro_P = %f Avermacro_R = %f Avermacro_F = %f\n', ...
+        finalresult(dd,1), finalresult(dd,2), finalresult(dd,3), finalresult(dd,4), finalresult(dd,5), ...
+        finalresult(dd,6), finalresult(dd,7), finalresult(dd,8), finalresult(dd,9));
+    fclose(fp);
+    
+end
+%dlmwrite(['result.csv' ],finalresult, 'precision', 4, 'newline', 'pc');
