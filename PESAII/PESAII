@@ -1,0 +1,215 @@
+%
+% Copyright (c) 2015, Yarpiz (www.yarpiz.com)
+% All rights reserved. Please read the "license.txt" for license terms.
+%
+% Project Code: YPEA123
+% Project Title: Pareto Envelope-based Selection Algorithm II (PESA-II)
+% Publisher: Yarpiz (www.yarpiz.com)
+%
+% Developer: S. Mostapha Kalami Heris (Member of Yarpiz Team)
+%
+% Contact Info: sm.kalami@gmail.com, info@yarpiz.com
+%
+
+clc;
+clear;
+close all;
+
+path= 'data\';
+D = dir(fullfile(path,'*.mat'));
+
+for dd = 1: length(D)
+    %% Problem Definition
+    load(fullfile(path,D(dd).name));
+    
+    fp = fopen(['result\',D(dd).name,'.txt'],'wt');
+    
+    sumObj = zeros(1,4);
+    
+    MaxIter = 30;
+    
+    for iter = 1:MaxIter
+        fprintf(fp, '%d:\n', iter);
+        
+        MaxIt=1000;      % Maximum Number of Iterations
+        
+        nPop=200;        % Population Size
+        
+        global suRED suREL NP
+        
+        fea = normalizeData(fea);
+        dim=size(fea,2);
+        
+        if dim>200
+            [features,weights] = MI(fea,gnd,12);
+            fea1=fea(:,features(1:200));
+        else
+            fea1=fea;
+        end
+        
+        [suRED,suREL] = computeRelevanceRedundancy(fea1,gnd);
+        NP=size(fea1,1);
+        
+        nVar = size(fea1,2);
+        
+        VarSize=[1 nVar];   % Decision Variables Matrix Size
+        
+        VarMin = -4*ones(1, nVar);
+        VarMax = 4*ones(1, nVar);
+        
+        
+        %% PESA-II Settings
+        
+        nArchive=20;    % Archive Size
+        
+        nGrid=1;        % Number of Grids per Dimension
+        
+        InflationFactor=0.1;    % Grid Inflation
+        
+        beta_deletion=1;
+        beta_selection=2;
+        
+        pCrossover=0.5;
+        nCrossover=round(pCrossover*nPop/2)*2;
+        
+        pMutation=1-pCrossover;
+        nMutation=nPop-nCrossover;
+        
+        crossover_params.gamma=0.05;
+        crossover_params.VarMin=VarMin;
+        crossover_params.VarMax=VarMax;
+        
+        mutation_params.h=0.01;
+        mutation_params.VarMin=VarMin;
+        mutation_params.VarMax=VarMax;
+        
+        
+        %% Initialization
+        
+        empty_individual.Position=[];
+        empty_individual.Cost=[];
+        empty_individual.Label=[];
+        empty_individual.IsDominated=[];
+        empty_individual.GridIndex=[];
+        
+        pop=repmat(empty_individual,nPop,1);
+        FES = 0;
+        
+        for i=1:nPop
+            pop(i).Position=unifrnd(VarMin,VarMax,VarSize);
+            [pop(i).Cost,pop(i).Label]=evaluate(pop(i).Position,fea1,gnd);
+        end
+        
+        archive=[];
+        
+        %% Main Loop
+        
+        while FES < MaxIt
+            FES
+            
+            pop=DetermineDomination(pop);
+            
+            ndpop=pop(~[pop.IsDominated]);
+            
+            archive=[archive
+                ndpop]; %#ok
+            
+            archive=DetermineDomination(archive);
+            
+            archive=archive(~[archive.IsDominated]);
+            
+            [archive, grid]=CreateGrid(archive,nGrid,InflationFactor);
+            
+            if numel(archive)>nArchive
+                E=numel(archive)-nArchive;
+                archive=TruncatePopulation(archive,grid,E,beta_deletion);
+                [archive, grid]=CreateGrid(archive,nGrid,InflationFactor);
+            end
+            
+            PF=archive;
+            
+            if FES>=MaxIt
+                break;
+            end
+            
+            % Crossover
+            popc=repmat(empty_individual,nCrossover/2,2);
+            for c=1:nCrossover/2
+                
+                p1=SelectFromPopulation(archive,grid,beta_selection);
+                p2=SelectFromPopulation(archive,grid,beta_selection);
+                
+                [popc(c,1).Position, popc(c,2).Position]=Crossover(p1.Position,...
+                    p2.Position,...
+                    crossover_params);
+                
+                [popc(c,1).Cost,popc(c,1).Label]=evaluate(popc(c,1).Position,fea1,gnd);
+                FES = FES + 1;
+                
+                [popc(c,2).Cost,popc(c,2).Label]=evaluate(popc(c,2).Position,fea1,gnd);
+                FES = FES + 1;
+                
+            end
+            popc=popc(:);
+            
+            % Mutation
+            popm=repmat(empty_individual,nMutation,1);
+            for m=1:nMutation
+                
+                p=SelectFromPopulation(archive,grid,beta_selection);
+                
+                popm(m).Position=Mutate(p.Position,mutation_params);
+                
+                [popm(m).Cost,popm(m).Label]=evaluate(popm(m).Position,fea1,gnd);
+                FES = FES + 1;
+                
+            end
+            
+            pop=[popc
+                popm];
+            
+        end
+        for i = 1:numel(PF)
+            lastCost(i,:) = PF(i).Cost';
+        end
+        
+        [result, index] = sort(lastCost(:,3));
+        
+        obj = lastCost(index(1),:);
+        sumObj  = sumObj + obj;
+        
+        lastLabel = PF(index(1)).Label';
+        
+        [~,~,Rn, NMI] = exMeasure(lastLabel,gnd);
+        [micro, macro] = micro_macro_PR(lastLabel,gnd);
+        
+        lastRn(iter) = Rn;
+        lastNMI(iter) = NMI;
+        lastmicro_P(iter) = micro.precision;
+        lastmicro_R(iter) = micro.recall;
+        lastmicro_F(iter) = micro.fscore;
+        lastmacro_P(iter) = macro.precision;
+        lastmacro_R(iter) = macro.recall;
+        lastmacro_F(iter) = macro.recall;
+        
+    end
+    
+    average = sumObj/MaxIter;
+    finalresult(dd,1) = sum(lastRn)/MaxIter;
+    finalresult(dd,2) = sum(lastNMI)/MaxIter;
+    finalresult(dd,3) = -average(3);
+    finalresult(dd,4) = sum(lastmicro_P)/MaxIter;
+    finalresult(dd,5) = sum(lastmicro_R)/MaxIter;
+    finalresult(dd,6) = sum(lastmicro_F)/MaxIter;
+    finalresult(dd,7) = sum(lastmacro_P)/MaxIter;
+    finalresult(dd,8) = sum(lastmacro_R)/MaxIter;
+    finalresult(dd,9) = sum(lastmacro_F)/MaxIter;
+    finalresult
+    
+    fprintf(fp, 'AverRn = %f AverNMI = %f AverAcc = %f Avermicro_P = %f Avermicro_R = %f Avermicro_F = %f Avermacro_P = %f Avermacro_R = %f Avermacro_F = %f\n', ...
+        finalresult(dd,1), finalresult(dd,2), finalresult(dd,3), finalresult(dd,4), finalresult(dd,5), ...
+        finalresult(dd,6), finalresult(dd,7), finalresult(dd,8), finalresult(dd,9));
+    fclose(fp);
+    
+end
+%dlmwrite(['result.csv' ],finalresult, 'precision', 4, 'newline', 'pc');
