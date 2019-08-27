@@ -1,0 +1,161 @@
+% This script illustrates the NSGA-II implementation of the
+% WQEISS/WMOSS/FQEISS feature selection techniques described in:
+%
+%   Karakaya, G., Galelli, S., Ahipasaoglu, S.D., Taormina, R., 2015.
+%   Identifying (Quasi) Equally Informative Subsets in Feature Selection Problems
+%   for Classification: A Max-Relevance Min-Redundancy Approach.
+%   IEEE Trans. Cybern. doi:10.1109/TCYB.2015.2444435
+%
+%
+% Copyright 2015 Riccardo Taormina (riccardo_taormina@sutd.edu.sg),
+%      Gulsah Karakaya (gulsahkilickarakaya@gmail.com;),
+%      Stefano Galelli (stefano_galelli@sutd.edu.sg),
+%      and Selin Damla Ahipasaoglu (ahipasaoglu@sutd.edu.sg;.
+%
+% Please refer to README.txt for further information.
+%
+%
+% This file is part of Matlab-Multi-objective-Feature-Selection.
+%
+%     Matlab-Multi-objective-Feature-Selection is free software: you can redistribute
+%     it and/or modify it under the terms of the GNU General Public License
+%     as published by the Free Software Foundation, either version 3 of the
+%     License, or (at your option) any later version.
+%
+%     This code is distributed in the hope that it will be useful,
+%     but WITHOUT ANY WARRANTY; without even the implied warranty of
+%     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+%     GNU General Public License for more details.
+%
+%     You should have received a copy of the GNU General Public License
+%     along with MATLAB_IterativeInputSelection.
+%     If not, see <http://www.gnu.org/licenses/>.
+
+
+clc;
+clear;
+
+%% include paths
+%addpath('..\..\Work\Code\toolboxes\mi');            % Peng's mutual information
+%addpath('..\toolboxes\nsga2_MATLAB_alternative');   % LIN's NPGM (for NSGA-II)
+%addpath('..\toolboxes\pareto_front');               % Yi Cao's paretofront toolbox
+
+%% Load and prepare dataset
+path= 'data\';
+D = dir(fullfile(path,'*.mat'));
+
+for dd = 1:length(D)
+    
+    
+    %% Prepare for launching the algorithms
+    
+    GOalgorithm = 'NSGA2';
+    
+    % get algorithm options
+    
+    fp = fopen(['result\',D(dd).name,'.txt']','wt');
+    
+    sumObj = zeros(1,4);
+    
+    MaxIter = 30;
+    
+    for iter = 1:MaxIter
+        
+        [orig_data,varNames,varTypes] = readData(fullfile(path,D(dd).name));
+        % % transform data
+        transf_data = transformData(orig_data,varTypes);
+        
+        % % normalize data
+        norm_data = normalizeData(transf_data(:,1:end-1));
+        
+        global objFunOptions
+        global archive fvals ix_solutions labellabel gnd
+        
+        gnd = orig_data(:,end);
+        
+        % compute relevance and redundacy
+        global suRED suREL
+        [suRED,suREL] = computeRelevanceRedundancy(norm_data);
+        
+        
+        [options,objFunOptions] = ...
+            getAlgorithmOptions(GOalgorithm,norm_data);
+        
+        Y       = objFunOptions.Y;         % targets
+        PHI     = objFunOptions.PHI;       % inputs
+        nFolds  = objFunOptions.nFolds;    % nFolds for k-fold cross validation
+        nELM    = objFunOptions.nELM;      % number of repeats for computing the accuracy obj function
+        nUnits  = objFunOptions.nUnits;    % info on dataset
+        
+        fprintf(fp, '%d:\n', iter);
+        % initialize overall archive and array containing the values of the
+        % objctive functions (fvals)
+        archive = {};               % archive of all solutions explored
+        fvals   = [];               % values of the obj function explored
+        %   RELEVANCE - REDUNDACY - ACCURACY - #INPUTS
+        ix_solutions = [];          % this will track which solutions are found by each algorithm
+        labellabel = [];
+        
+        % launch WQEISS
+        fprintf ('Launching WQEISS\n')
+        
+        % define number of obj functions and the matlab function coding them
+        options.numObj = 4;
+        options.objfun = @objFunWQEISS; %@用法传递句柄
+        
+        % launch
+        nsga2(options);
+        
+        % get solutions indexes for WQEISS
+        ixWQEISS = find(ix_solutions);
+        
+        
+        % compute final pareto front
+        ixesPF = find(paretofront(fvals(ixWQEISS,:)));
+        PF_WQEISS.archive   = archive(ixWQEISS(ixesPF));
+        PF_WQEISS.fvals     = fvals(ixWQEISS(ixesPF),:);
+        PF_WQEISS.fvals_ext = fvals(ixWQEISS(ixesPF),:);
+        PF_WQEISS.label = labellabel(ixWQEISS(ixesPF),:);
+        
+        [result, index] = sort(PF_WQEISS.fvals(:,3));
+        obj = PF_WQEISS.fvals(index(1),:);
+        lastLabel = PF_WQEISS.label(index(1),:)';
+        
+        sumObj  = sumObj + obj;
+        
+        [~,~,Rn, NMI] = exMeasure(lastLabel,gnd);
+        [micro, macro] = micro_macro_PR(lastLabel,gnd);
+        
+        lastRn(iter) = Rn;
+        lastNMI(iter) = NMI;
+        lastmicro_P(iter) = micro.precision;
+        lastmicro_R(iter) = micro.recall;
+        lastmicro_F(iter) = micro.fscore;
+        lastmacro_P(iter) = macro.precision;
+        lastmacro_R(iter) = macro.recall;
+        lastmacro_F(iter) = macro.recall;
+        fprintf(fp, 'Rn = %f NMI = %f  micro_P = %f micro_R = %f micro_F = %f macro_P = %f macro_R = %f macro_F = %f\n', ...
+            lastRn(iter),  lastNMI(iter), lastmicro_P(iter), lastmicro_R(iter), ...
+            lastmicro_F(iter), lastmacro_P(iter), lastmacro_R(iter), lastmacro_F(iter));
+        
+    end
+    
+    average = sumObj/MaxIter;
+    finalresult(dd,1) = sum(lastRn)/MaxIter;
+    finalresult(dd,2) = sum(lastNMI)/MaxIter;
+    finalresult(dd,3) = -average(3);
+    finalresult(dd,4) = sum(lastmicro_P)/MaxIter;
+    finalresult(dd,5) = sum(lastmicro_R)/MaxIter;
+    finalresult(dd,6) = sum(lastmicro_F)/MaxIter;
+    finalresult(dd,7) = sum(lastmacro_P)/MaxIter;
+    finalresult(dd,8) = sum(lastmacro_R)/MaxIter;
+    finalresult(dd,9) = sum(lastmacro_F)/MaxIter;
+    finalresult
+    
+    fprintf(fp, 'AverRn = %f AverNMI = %f AverAcc = %f Avermicro_P = %f Avermicro_R = %f Avermicro_F = %f Avermacro_P = %f Avermacro_R = %f Avermacro_F = %f\n', ...
+        finalresult(dd,1), finalresult(dd,2), finalresult(dd,3), finalresult(dd,4), finalresult(dd,5), ...
+        finalresult(dd,6), finalresult(dd,7), finalresult(dd,8), finalresult(dd,9));
+    fclose(fp);
+    
+end
+%dlmwrite(['result.csv' ],finalresult, 'precision', 4, 'newline', 'pc');
