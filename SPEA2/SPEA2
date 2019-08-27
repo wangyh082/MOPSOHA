@@ -1,0 +1,266 @@
+clc;
+clear;
+close all;
+clear all
+clc
+
+path= 'data\';
+D = dir(fullfile(path,'*.mat'));
+
+for dd = 1: length(D)
+    %% Problem Definition
+    load(fullfile(path,D(dd).name));
+    
+    fp = fopen(['result\',D(dd).name,'.txt'],'wt');
+    
+    sumObj = zeros(1,4);
+    
+    MaxIter = 30;
+    
+    for iter = 1:MaxIter
+        
+        fprintf(fp, '%d:\n', iter);
+        
+        global suRED suREL NP
+        
+        fea = normalizeData(fea);
+        dim=size(fea,2);
+        if dim>100
+            [features,weights] = MI(fea,gnd,5);
+            fea1=fea(:,features(1:100));
+        else
+            fea1=fea;
+        end
+        
+        [suRED,suREL] = computeRelevanceRedundancy(fea1,gnd);
+        NP=size(fea1,1);
+        
+        nVar = size(fea1,2);
+        
+        VarSize=[1 nVar];   % Decision Variables Matrix Size
+        
+        VarMin = -4*ones(1, nVar);
+        VarMax = 4*ones(1, nVar);
+        
+        %% Problem Definition
+        
+        
+        %% SPEA2 Settings
+        
+        MaxIt=1000;          % Maximum Number of Iterations
+        
+        nPop=50;            % Population Size
+        
+        nArchive=20;        % Archive Size
+        
+        K=round(sqrt(nPop+nArchive));  % KNN Parameter
+        
+        pCrossover=0.7;
+        nCrossover=round(pCrossover*nPop/2)*2;
+        
+        pMutation=1-pCrossover;
+        nMutation=nPop-nCrossover;
+        
+        crossover_params.gamma=0.01;
+        crossover_params.VarMin=VarMin;
+        crossover_params.VarMax=VarMax;
+        
+        mutation_params.h=0.01;
+        mutation_params.VarMin=VarMin;
+        mutation_params.VarMax=VarMax;
+        
+        %% Initialization
+        
+        empty_individual.Position=[];
+        empty_individual.Cost=[];
+        empty_individual.Label=[];
+        empty_individual.S=[];
+        empty_individual.R=[];
+        empty_individual.sigma=[];
+        empty_individual.sigmaK=[];
+        empty_individual.D=[];
+        empty_individual.F=[];
+        
+        pop=repmat(empty_individual,nPop,1);
+        for i=1:nPop
+            pop(i).Position=unifrnd(VarMin,VarMax,VarSize);
+            [pop(i).Cost,pop(i).Label]=evaluate(pop(i).Position,fea1,gnd);
+        end
+        
+        archive=[];
+        
+        %% Main Loop
+        FES = 0;
+        flag = 0;
+        while FES < MaxIt
+            FES
+            if flag == 1
+                flag = 0;
+                break;
+            end
+            
+            Q=[pop
+                archive];
+            
+            nQ=numel(Q);
+            
+            dom=false(nQ,nQ);
+            
+            for i=1:nQ
+                Q(i).S=0;
+            end
+            
+            for i=1:nQ
+                for j=i+1:nQ
+                    
+                    if Dominates(Q(i),Q(j))
+                        Q(i).S=Q(i).S+1;
+                        dom(i,j)=true;
+                        
+                    elseif Dominates(Q(j),Q(i))
+                        Q(j).S=Q(j).S+1;
+                        dom(j,i)=true;
+                        
+                    end
+                    
+                end
+            end
+            
+            S=[Q.S];
+            for i=1:nQ
+                Q(i).R=sum(S(dom(:,i)));
+            end
+            
+            Z=[Q.Cost]';
+            SIGMA=pdist2(Z,Z,'seuclidean');
+            SIGMA=sort(SIGMA);
+            for i=1:nQ
+                Q(i).sigma=SIGMA(:,i);
+                Q(i).sigmaK=Q(i).sigma(K);
+                Q(i).D=1/(Q(i).sigmaK+2);
+                Q(i).F=Q(i).R+Q(i).D;
+            end
+            
+            nND=sum([Q.R]==0);
+            if nND<=nArchive
+                F=[Q.F];
+                [F, SO]=sort(F);
+                Q=Q(SO);
+                archive=Q(1:min(nArchive,nQ));
+                
+            else
+                SIGMA=SIGMA(:,[Q.R]==0);
+                archive=Q([Q.R]==0);
+                
+                k=2;
+                while numel(archive)>nArchive
+                    while min(SIGMA(k,:))==max(SIGMA(k,:)) && k<size(SIGMA,1)
+                        k=k+1;
+                    end
+                    
+                    [~, j]=min(SIGMA(k,:));
+                    
+                    archive(j)=[];
+                    SIGMA(:,j)=[];
+                end
+                
+            end
+            
+            PF=archive([archive.R]==0); % Approximate Pareto Front
+            
+            if FES>=MaxIt
+                break;
+            end
+            
+            % Crossover
+            popc=repmat(empty_individual,nCrossover/2,2);
+            for c=1:nCrossover/2
+                
+                p1=BinaryTournamentSelection(archive,[archive.F]);
+                p2=BinaryTournamentSelection(archive,[archive.F]);
+                
+                [popc(c,1).Position, popc(c,2).Position]=Crossover(p1.Position,p2.Position,crossover_params);
+                
+                [popc(c,1).Cost,popc(c,1).Label]=evaluate(popc(c,1).Position,fea1,gnd);
+                FES = FES + 1;
+                [popc(c,2).Cost,popc(c,2).Label]=evaluate(popc(c,2).Position,fea1,gnd);
+                FES = FES + 1;
+                if FES > MaxIt
+                    flag = 1;
+                    break;
+                end
+            end
+            popc=popc(:);
+            
+            % Mutation
+            popm=repmat(empty_individual,nMutation,1);
+            for m=1:nMutation
+                
+                p=BinaryTournamentSelection(archive,[archive.F]);
+                
+                popm(m).Position=Mutate(p.Position,mutation_params);
+                
+                [popm(m).Cost,popm(m).Label]=evaluate(popm(m).Position,fea1,gnd);
+                FES = FES + 1;
+                if FES > MaxIt
+                    flag = 1;
+                    break;
+                end
+                
+            end
+            
+            % Create New Population
+            pop=[popc
+                popm];
+            
+        end
+        
+        numel(PF)
+        
+        lastCost = zeros(numel(PF),4);
+        
+        for i = 1:numel(PF)
+            lastCost(i,:) = PF(i).Cost';
+        end
+        lastCost
+        
+        [result, index] = sort(lastCost(:,3));
+        
+        obj = lastCost(index(1),:);
+        sumObj  = sumObj + obj;
+        
+        lastLabel = PF(index(1)).Label';
+        
+        [~,~,Rn, NMI] = exMeasure(lastLabel,gnd);
+        [micro, macro] = micro_macro_PR(lastLabel,gnd);
+        
+        lastRn(iter) = Rn;
+        lastNMI(iter) = NMI;
+        lastmicro_P(iter) = micro.precision;
+        lastmicro_R(iter) = micro.recall;
+        lastmicro_F(iter) = micro.fscore;
+        lastmacro_P(iter) = macro.precision;
+        lastmacro_R(iter) = macro.recall;
+        lastmacro_F(iter) = macro.recall;
+        
+    end
+    
+    average = sumObj/MaxIter;
+    finalresult(dd,1) = sum(lastRn)/MaxIter;
+    finalresult(dd,2) = sum(lastNMI)/MaxIter;
+    finalresult(dd,3) = -average(3);
+    finalresult(dd,4) = sum(lastmicro_P)/MaxIter;
+    finalresult(dd,5) = sum(lastmicro_R)/MaxIter;
+    finalresult(dd,6) = sum(lastmicro_F)/MaxIter;
+    finalresult(dd,7) = sum(lastmacro_P)/MaxIter;
+    finalresult(dd,8) = sum(lastmacro_R)/MaxIter;
+    finalresult(dd,9) = sum(lastmacro_F)/MaxIter;
+    finalresult
+    
+    fprintf(fp, 'AverRn = %f AverNMI = %f AverAcc = %f Avermicro_P = %f Avermicro_R = %f Avermicro_F = %f Avermacro_P = %f Avermacro_R = %f Avermacro_F = %f\n', ...
+        finalresult(dd,1), finalresult(dd,2), finalresult(dd,3), finalresult(dd,4), finalresult(dd,5), ...
+        finalresult(dd,6), finalresult(dd,7), finalresult(dd,8), finalresult(dd,9));
+    fclose(fp);
+    
+end
+%dlmwrite(['result.csv' ],finalresult, 'precision', 4, 'newline', 'pc');
